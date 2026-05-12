@@ -1,3 +1,11 @@
+name: gait_detector
+description: 步态检测APP - 通过蓝牙连接4个传感器实时采集步态数据
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
 dependencies:
   flutter:
     sdk: flutter
