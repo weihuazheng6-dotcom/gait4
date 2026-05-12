@@ -28,12 +28,22 @@ jobs:
         with:
           flutter-version: '3.19.6'
           channel: 'stable'
-          cache: true
+          cache: false
 
-      - name: Clean Flutter cache
+      - name: Clean all caches
         run: |
           flutter clean
-          flutter pub cache repair
+          rm -rf ~/.pub-cache/hosted/pub.dev/flutter_blue_plus*
+          rm -rf .dart_tool
+          rm -rf build
+
+      - name: Get dependencies
+        run: flutter pub get --no-offline
+
+      - name: Verify flutter_blue_plus version
+        run: |
+          echo "Checking flutter_blue_plus version..."
+          cat pubspec.lock | grep -A 5 "flutter_blue_plus"
 
       - name: Create MainActivity if missing
         run: |
@@ -76,9 +86,6 @@ jobs:
           </resources>
           EOF
           cp android/app/src/main/res/values/styles.xml android/app/src/main/res/values-night/
-
-      - name: Get dependencies
-        run: flutter pub get
 
       - name: Build Debug APK
         run: flutter build apk --debug
