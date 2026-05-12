@@ -26,7 +26,26 @@ rootProject.buildDir = '../build'
 
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
-    project.evaluationDependsOn(':app')
+}
+
+subprojects { subproject ->
+    subproject.afterEvaluate {
+        if (subproject.plugins.hasPlugin('com.android.library')) {
+            subproject.android {
+                if (!subproject.android.compileSdkVersion) {
+                    compileSdkVersion rootProject.ext.compileSdkVersion
+                }
+                defaultConfig {
+                    if (minSdkVersion == null) {
+                        minSdkVersion rootProject.ext.minSdkVersion
+                    }
+                    if (targetSdkVersion == null) {
+                        targetSdkVersion rootProject.ext.targetSdkVersion
+                    }
+                }
+            }
+        }
+    }
 }
 
 tasks.register("clean", Delete) {
