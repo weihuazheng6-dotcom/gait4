@@ -26,6 +26,21 @@ subprojects {
     project.evaluationDependsOn(':app')
 }
 
+// 关键：为所有 Android Library 插件注入 compileSdkVersion
+gradle.projectsEvaluated {
+    rootProject.subprojects.each { subproject ->
+        if (subproject.plugins.hasPlugin('com.android.library')) {
+            subproject.android {
+                compileSdkVersion 34
+                defaultConfig {
+                    minSdkVersion 21
+                    targetSdkVersion 34
+                }
+            }
+        }
+    }
+}
+
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
