@@ -19,21 +19,17 @@ allprojects {
 }
 
 rootProject.buildDir = '../build'
+
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
-}
-subprojects {
     project.evaluationDependsOn(':app')
-}
-
-// ⚠️ 关键修复：为所有子插件强制注入 compileSdk / namespace
-// 解决 flutter_blue_plus_android 等插件的 "Could not get unknown property 'flutter'" 问题
-subprojects {
+    
+    // 为所有子插件注入 compileSdk 兜底配置
     afterEvaluate { project ->
         if (project.hasProperty('android')) {
             project.android {
                 if (namespace == null) {
-                    namespace project.group
+                    namespace = project.group
                 }
                 compileSdkVersion 34
                 if (defaultConfig.minSdkVersion == null) {
