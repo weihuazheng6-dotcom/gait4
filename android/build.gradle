@@ -23,21 +23,6 @@ rootProject.buildDir = '../build'
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
     project.evaluationDependsOn(':app')
-    
-    // 为所有子插件注入 compileSdk 兜底配置
-    afterEvaluate { project ->
-        if (project.hasProperty('android')) {
-            project.android {
-                if (namespace == null) {
-                    namespace = project.group
-                }
-                compileSdkVersion 34
-                if (defaultConfig.minSdkVersion == null) {
-                    defaultConfig.minSdkVersion 21
-                }
-            }
-        }
-    }
 }
 
 tasks.register("clean", Delete) {
