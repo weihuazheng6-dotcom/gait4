@@ -17,11 +17,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java 11
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '11'
 
       - name: Setup Flutter 3.24.0
         uses: subosito/flutter-action@v2
@@ -30,67 +30,36 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Create missing Android files
-        run: |
-          # 只创建缺失的 gradlew 和 wrapper，不覆盖现有文件
-          if [ ! -f "android/gradlew" ]; then
-            echo "Creating gradlew..."
-            cd android
-            cat > gradlew << 'GRADLEW'
-          #!/bin/sh
-          exec gradle "$@"
-          GRADLEW
-            chmod +x gradlew
-            cd ..
-          fi
-          
-          # 创建 gradle wrapper 目录
-          mkdir -p android/gradle/wrapper
-          
-          # 如果 gradle-wrapper.jar 不存在，通过 flutter 生成
-          if [ ! -f "android/gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Generating gradle wrapper via flutter..."
-            flutter pub get
-            # Flutter pub get 会自动生成必要的 Android 文件
-          fi
-
       - name: Create MainActivity if missing
         run: |
           MAIN_ACTIVITY="android/app/src/main/kotlin/com/example/gait_detector/MainActivity.kt"
           if [ ! -f "$MAIN_ACTIVITY" ]; then
-            echo "Creating MainActivity.kt..."
             mkdir -p "$(dirname "$MAIN_ACTIVITY")"
             cat > "$MAIN_ACTIVITY" << 'KOTLIN'
           package com.example.gait_detector
-          
+
           import io.flutter.embedding.android.FlutterActivity
-          
+
           class MainActivity: FlutterActivity()
           KOTLIN
           fi
 
-      - name: Create Android resources if missing
+      - name: Create Android resources
         run: |
-          # 创建必要的资源目录和文件
           mkdir -p android/app/src/main/res/drawable
           mkdir -p android/app/src/main/res/drawable-v21
           mkdir -p android/app/src/main/res/values
           mkdir -p android/app/src/main/res/values-night
-          
-          # launch_background.xml
-          if [ ! -f "android/app/src/main/res/drawable/launch_background.xml" ]; then
-            cat > android/app/src/main/res/drawable/launch_background.xml << 'XML'
+
+          cat > android/app/src/main/res/drawable/launch_background.xml << 'XML'
           <?xml version="1.0" encoding="utf-8"?>
           <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
               <item android:drawable="@android:color/white" />
           </layer-list>
           XML
-            cp android/app/src/main/res/drawable/launch_background.xml android/app/src/main/res/drawable-v21/
-          fi
-          
-          # styles.xml
-          if [ ! -f "android/app/src/main/res/values/styles.xml" ]; then
-            cat > android/app/src/main/res/values/styles.xml << 'XML'
+          cp android/app/src/main/res/drawable/launch_background.xml android/app/src/main/res/drawable-v21/
+
+          cat > android/app/src/main/res/values/styles.xml << 'XML'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
@@ -101,8 +70,7 @@ jobs:
               </style>
           </resources>
           XML
-            cp android/app/src/main/res/values/styles.xml android/app/src/main/res/values-night/
-          fi
+          cp android/app/src/main/res/values/styles.xml android/app/src/main/res/values-night/
 
       - name: Get dependencies
         run: flutter pub get
