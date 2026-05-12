@@ -23,25 +23,30 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
-      - name: Setup Flutter 3.24.0
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.19.6'
           channel: 'stable'
           cache: true
+
+      - name: Clean Flutter cache
+        run: |
+          flutter clean
+          flutter pub cache repair
 
       - name: Create MainActivity if missing
         run: |
           MAIN_ACTIVITY="android/app/src/main/kotlin/com/example/gait_detector/MainActivity.kt"
           if [ ! -f "$MAIN_ACTIVITY" ]; then
             mkdir -p "$(dirname "$MAIN_ACTIVITY")"
-            cat > "$MAIN_ACTIVITY" << 'KOTLIN'
+            cat > "$MAIN_ACTIVITY" << 'EOF'
           package com.example.gait_detector
 
           import io.flutter.embedding.android.FlutterActivity
 
           class MainActivity: FlutterActivity()
-          KOTLIN
+          EOF
           fi
 
       - name: Create Android resources
@@ -51,15 +56,15 @@ jobs:
           mkdir -p android/app/src/main/res/values
           mkdir -p android/app/src/main/res/values-night
 
-          cat > android/app/src/main/res/drawable/launch_background.xml << 'XML'
+          cat > android/app/src/main/res/drawable/launch_background.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
               <item android:drawable="@android:color/white" />
           </layer-list>
-          XML
+          EOF
           cp android/app/src/main/res/drawable/launch_background.xml android/app/src/main/res/drawable-v21/
 
-          cat > android/app/src/main/res/values/styles.xml << 'XML'
+          cat > android/app/src/main/res/values/styles.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
@@ -69,7 +74,7 @@ jobs:
                   <item name="android:windowBackground">?android:colorBackground</item>
               </style>
           </resources>
-          XML
+          EOF
           cp android/app/src/main/res/values/styles.xml android/app/src/main/res/values-night/
 
       - name: Get dependencies
