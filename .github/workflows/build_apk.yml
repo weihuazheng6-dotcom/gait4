@@ -40,11 +40,6 @@ jobs:
       - name: Get dependencies
         run: flutter pub get --no-offline
 
-      - name: Verify flutter_blue_plus version
-        run: |
-          echo "Checking flutter_blue_plus version..."
-          cat pubspec.lock | grep -A 5 "flutter_blue_plus"
-
       - name: Create MainActivity if missing
         run: |
           MAIN_ACTIVITY="android/app/src/main/kotlin/com/example/gait_detector/MainActivity.kt"
@@ -65,6 +60,11 @@ jobs:
           mkdir -p android/app/src/main/res/drawable-v21
           mkdir -p android/app/src/main/res/values
           mkdir -p android/app/src/main/res/values-night
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
 
           cat > android/app/src/main/res/drawable/launch_background.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -86,6 +86,30 @@ jobs:
           </resources>
           EOF
           cp android/app/src/main/res/values/styles.xml android/app/src/main/res/values-night/
+
+      - name: Generate launcher icons
+        run: |
+          # 生成一个简单的纯色 PNG 图标（base64 编码的 1x1 蓝色像素，缩放到各尺寸）
+          # 使用 ImageMagick 生成不同尺寸的 ic_launcher.png
+          sudo apt-get update && sudo apt-get install -y imagemagick
+
+          # 创建一个 512x512 的蓝色图标作为源
+          convert -size 512x512 xc:'#2196F3' \
+            -gravity center \
+            -pointsize 200 \
+            -fill white \
+            -annotate 0 'G' \
+            /tmp/ic_launcher_src.png
+
+          # 生成各种尺寸
+          convert /tmp/ic_launcher_src.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          convert /tmp/ic_launcher_src.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          convert /tmp/ic_launcher_src.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          convert /tmp/ic_launcher_src.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          convert /tmp/ic_launcher_src.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+          echo "Icons generated successfully"
+          ls -la android/app/src/main/res/mipmap-*/
 
       - name: Build Debug APK
         run: flutter build apk --debug
