@@ -24,18 +24,14 @@ rootProject.buildDir = '../build'
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
     project.evaluationDependsOn(':app')
-}
 
-// 关键：为所有 Android Library 插件注入 compileSdkVersion
-gradle.projectsEvaluated {
-    rootProject.subprojects.each { subproject ->
-        if (subproject.plugins.hasPlugin('com.android.library')) {
-            subproject.android {
-                compileSdkVersion 34
-                defaultConfig {
-                    minSdkVersion 21
-                    targetSdkVersion 34
-                }
+    // 监听插件应用事件，在 com.android.library 插件应用时立即配置
+    plugins.withId('com.android.library') {
+        android {
+            compileSdkVersion 34
+            defaultConfig {
+                minSdkVersion 21
+                targetSdkVersion 34
             }
         }
     }
