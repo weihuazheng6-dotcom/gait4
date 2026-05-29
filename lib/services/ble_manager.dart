@@ -451,7 +451,7 @@ class BleManager extends ChangeNotifier {
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
-    // 压力数据：如果缓存存在则拷贝，否则为 null
+    // 压力数据使用缓存（上一次有效值，可为null）
     final PressureData? pL = _lastPressureL?.copy();
     final PressureData? pR = _lastPressureR?.copy();
 
