@@ -7,9 +7,11 @@ import '../models/gait_data.dart';
 
 /// BLE UUID常量
 class BleUuids {
+  // 压力传感器 JDY-10-V2.5
   static final Guid pressureService = Guid('0000FFE0-0000-1000-8000-00805F9B34FB');
   static final Guid pressureNotify  = Guid('0000FFE1-0000-1000-8000-00805F9B34FB');
 
+  // IMU WT9011DCL
   static final Guid imuService = Guid('0000FFE5-0000-1000-8000-00805F9A34FB');
   static final Guid imuNotify  = Guid('0000FFE4-0000-1000-8000-00805F9A34FB');
   static final Guid imuWrite   = Guid('0000FFE9-0000-1000-8000-00805F9A34FB');
@@ -23,15 +25,22 @@ class DeviceContext {
   StreamSubscription<BluetoothConnectionState>? connSub;
   StreamSubscription<List<int>>? notifySub;
 
+  // 数据
   PressureData pressure = PressureData();
   ImuData imu = ImuData();
 
+  // 缓冲区
   final List<int> _imuBuf = [];
   String _pressureBuf = '';
 
+  // 元信息
   String deviceName = '';
   String deviceId = '';
   DateTime? lastUpdate;
+
+  // 数据处理流控制
+  int _dataPacketsProcessed = 0;
+  int _skippedNotifications = 0;
 
   DeviceContext(this.role);
 
@@ -40,10 +49,13 @@ class DeviceContext {
     imu = ImuData();
     _imuBuf.clear();
     _pressureBuf = '';
+    _dataPacketsProcessed = 0;
+    _skippedNotifications = 0;
   }
 }
 
 class BleManager extends ChangeNotifier {
+  // 4个角色的设备上下文
   final Map<DeviceRole, DeviceContext> _contexts = {
     DeviceRole.pressureLeft:  DeviceContext(DeviceRole.pressureLeft),
     DeviceRole.pressureRight: DeviceContext(DeviceRole.pressureRight),
@@ -51,20 +63,36 @@ class BleManager extends ChangeNotifier {
     DeviceRole.imuRight:      DeviceContext(DeviceRole.imuRight),
   };
 
+  // 扫描结果
   final List<ScanResult> _scanResults = [];
   bool _scanning = false;
   StreamSubscription<List<ScanResult>>? _scanSub;
 
+  // 录制
   bool _recording = false;
   String _currentLabel = '0';
   final List<GaitRecord> _records = [];
-  Timer? _imuTimer;      // 100Hz 定时器
-  Timer? _pressureTimer; // 25Hz 定时器
+  Timer? _pressureRecordTimer;  // 压力采样定时器（25Hz）
+  Timer? _imuRecordTimer;       // 惯性采样定时器（100Hz）
+  
+  // 缓存最新的压力值（用于惯性采样时读取）
+  PressureData _lastPressureL = PressureData();
+  PressureData _lastPressureR = PressureData();
 
-  // 压力数据缓存（上一次有效值）
-  PressureData? _lastPressureL;
-  PressureData? _lastPressureR;
+  // UI更新节流 - 防止过高频率的UI更新
+  final Map<DeviceRole, DateTime> _lastNotifyTime = {};
+  static const Duration _notifyThrottle = Duration(milliseconds: 50); // 20Hz UI更新
 
+  // 数据处理队列
+  final Map<DeviceRole, List<Map<String, dynamic>>> _dataQueue = {
+    for (final role in DeviceRole.values) role: [],
+  };
+
+  // 后台数据处理定时器
+  Timer? _dataProcessTimer;
+  static const Duration _processingInterval = Duration(milliseconds: 10);
+
+  // 公开getters
   DeviceContext getContext(DeviceRole role) => _contexts[role]!;
   List<ScanResult> get scanResults => List.unmodifiable(_scanResults);
   bool get isScanning => _scanning;
@@ -72,7 +100,20 @@ class BleManager extends ChangeNotifier {
   String get currentLabel => _currentLabel;
   int get recordCount => _records.length;
   List<GaitRecord> get records => List.unmodifiable(_records);
-  int get connectedCount => _contexts.values.where((c) => c.status == ConnectionStatus.connected).length;
+
+  int get connectedCount => _contexts.values
+      .where((c) => c.status == ConnectionStatus.connected)
+      .length;
+
+  BleManager() {
+    _initializeLastNotifyTime();
+  }
+
+  void _initializeLastNotifyTime() {
+    for (final role in DeviceRole.values) {
+      _lastNotifyTime[role] = DateTime.now();
+    }
+  }
 
   // ─────────────────────────── 扫描 ───────────────────────────
 
@@ -83,6 +124,7 @@ class BleManager extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // 确保蓝牙开启
       if (await FlutterBluePlus.isSupported == false) {
         debugPrint('[BLE] 设备不支持蓝牙');
         _scanning = false;
@@ -105,6 +147,7 @@ class BleManager extends ChangeNotifier {
         androidUsesFineLocation: true,
       );
 
+      // 等待扫描结束
       await Future.delayed(Duration(seconds: timeoutSec));
     } catch (e) {
       debugPrint('[BLE] 启动扫描失败: $e');
@@ -133,6 +176,7 @@ class BleManager extends ChangeNotifier {
   Future<bool> connectDevice(BluetoothDevice device, DeviceRole role) async {
     final ctx = _contexts[role]!;
 
+    // 如果原来有连接，先断开
     if (ctx.device != null) {
       await _disconnectInternal(ctx);
     }
@@ -147,6 +191,7 @@ class BleManager extends ChangeNotifier {
     _log(role, '开始连接 $ctx.deviceName (${ctx.deviceId})');
 
     try {
+      // 监听连接状态
       await ctx.connSub?.cancel();
       ctx.connSub = device.connectionState.listen((state) {
         _log(role, '连接状态: $state');
@@ -157,15 +202,18 @@ class BleManager extends ChangeNotifier {
         }
       });
 
+      // 连接
       await device.connect(
         timeout: const Duration(seconds: 15),
         autoConnect: false,
       );
 
+      // 请求更大MTU（Android）
       try {
         await device.requestMtu(247);
       } catch (_) {}
 
+      // 发现服务
       final services = await device.discoverServices();
       _log(role, '发现 ${services.length} 个服务');
 
@@ -179,6 +227,10 @@ class BleManager extends ChangeNotifier {
       ctx.lastUpdate = DateTime.now();
       notifyListeners();
       _log(role, '✅ 连接成功');
+
+      // 启动后台数据处理器（只启动一次）
+      _startDataProcessor();
+
       return true;
     } catch (e) {
       _log(role, '❌ 连接失败: $e');
@@ -191,9 +243,13 @@ class BleManager extends ChangeNotifier {
     }
   }
 
-  Future<void> _setupPressure(DeviceContext ctx, List<BluetoothService> services) async {
+  /// 配置压力传感器Notify
+  Future<void> _setupPressure(
+      DeviceContext ctx, List<BluetoothService> services) async {
     BluetoothCharacteristic? notifyChar;
+
     for (final s in services) {
+      // 匹配服务（兼容短UUID FFE0）
       final serviceUuidStr = s.uuid.str.toUpperCase();
       if (serviceUuidStr.contains('FFE0')) {
         for (final c in s.characteristics) {
@@ -206,20 +262,30 @@ class BleManager extends ChangeNotifier {
       }
       if (notifyChar != null) break;
     }
-    if (notifyChar == null) throw Exception('未找到压力传感器FFE1特征');
 
+    if (notifyChar == null) {
+      throw Exception('未找到压力传感器FFE1特征');
+    }
+
+    // 开启notify（带重试，兼容鸿蒙）
     await _enableNotifyWithRetry(notifyChar);
+
     await ctx.notifySub?.cancel();
     ctx.notifySub = notifyChar.lastValueStream.listen((data) {
-      _handlePressureData(ctx, data);
+      // 直接放入队列，而不是立即处理
+      _queuePressureData(ctx, data);
     }, onError: (e) {
       _log(ctx.role, 'Notify错误: $e');
     });
+
     _log(ctx.role, '✅ 压力Notify已开启');
   }
 
-  Future<void> _setupIMU(DeviceContext ctx, List<BluetoothService> services) async {
+  /// 配置IMU Notify
+  Future<void> _setupIMU(
+      DeviceContext ctx, List<BluetoothService> services) async {
     BluetoothCharacteristic? notifyChar;
+
     for (final s in services) {
       final serviceUuidStr = s.uuid.str.toUpperCase();
       if (serviceUuidStr.contains('FFE5')) {
@@ -233,19 +299,28 @@ class BleManager extends ChangeNotifier {
       }
       if (notifyChar != null) break;
     }
-    if (notifyChar == null) throw Exception('未找到IMU FFE4特征');
 
+    if (notifyChar == null) {
+      throw Exception('未找到IMU FFE4特征');
+    }
+
+    // 开启notify（带重试）
     await _enableNotifyWithRetry(notifyChar);
+
     await ctx.notifySub?.cancel();
     ctx.notifySub = notifyChar.lastValueStream.listen((data) {
-      _handleImuData(ctx, data);
+      // 直接放入队列，而不是立即处理
+      _queueImuData(ctx, data);
     }, onError: (e) {
       _log(ctx.role, 'Notify错误: $e');
     });
+
     _log(ctx.role, '✅ IMU Notify已开启');
   }
 
-  Future<void> _enableNotifyWithRetry(BluetoothCharacteristic char, {int retries = 3}) async {
+  /// 开启Notify（带重试，兼容鸿蒙CCCD写入问题）
+  Future<void> _enableNotifyWithRetry(
+      BluetoothCharacteristic char, {int retries = 3}) async {
     Exception? lastErr;
     for (int i = 0; i < retries; i++) {
       try {
@@ -261,14 +336,90 @@ class BleManager extends ChangeNotifier {
     throw lastErr ?? Exception('setNotifyValue失败');
   }
 
+  // ─────────────────────────── 数据队列 ───────────────────────────
+
+  /// 将压力数据入队（非阻塞）
+  void _queuePressureData(DeviceContext ctx, List<int> data) {
+    final queue = _dataQueue[ctx.role]!;
+    // 限制队列大小，防止内存泄漏
+    if (queue.length < 50) {
+      queue.add({
+        'type': 'pressure',
+        'data': data,
+        'timestamp': DateTime.now(),
+      });
+    }
+  }
+
+  /// 将IMU数据入队（非阻塞）
+  void _queueImuData(DeviceContext ctx, List<int> data) {
+    final queue = _dataQueue[ctx.role]!;
+    // 限制队列大小，防止内存泄漏
+    if (queue.length < 50) {
+      queue.add({
+        'type': 'imu',
+        'data': data,
+        'timestamp': DateTime.now(),
+      });
+    }
+  }
+
+  // ─────────────────────────── 后台数据处理 ───────────────────────────
+
+  /// 启动后台数据处理定时器
+  void _startDataProcessor() {
+    _dataProcessTimer ??= Timer.periodic(_processingInterval, (_) {
+      _processAllDataQueues();
+    });
+  }
+
+  /// 处理所有设备的数据队列
+  void _processAllDataQueues() {
+    bool shouldNotify = false;
+
+    for (final role in DeviceRole.values) {
+      final queue = _dataQueue[role]!;
+      if (queue.isEmpty) continue;
+
+      final ctx = _contexts[role]!;
+
+      // 一次性处理队列中的所有数据
+      while (queue.isNotEmpty) {
+        final item = queue.removeAt(0);
+        final data = item['data'] as List<int>;
+
+        if (item['type'] == 'pressure') {
+          _handlePressureData(ctx, data);
+        } else {
+          _handleImuData(ctx, data);
+        }
+      }
+
+      // 检查是否需要通知UI（节流）
+      final now = DateTime.now();
+      final lastNotify = _lastNotifyTime[role]!;
+      if (now.difference(lastNotify) >= _notifyThrottle) {
+        _lastNotifyTime[role] = now;
+        shouldNotify = true;
+      }
+    }
+
+    // 统一的UI更新通知，而不是每个数据都通知
+    if (shouldNotify) {
+      notifyListeners();
+    }
+  }
+
   // ─────────────────────────── 数据解析 ───────────────────────────
 
+  /// 压力数据：ASCII "$P1,P2,P3,...;"
   void _handlePressureData(DeviceContext ctx, List<int> data) {
     try {
       final text = ascii.decode(data, allowInvalid: true);
       ctx._pressureBuf += text;
 
-      if (ctx._pressureBuf.length > 512) {
+      // 防止缓冲区过大
+      if (ctx._pressureBuf.length > 1024) {
         final lastDollar = ctx._pressureBuf.lastIndexOf(r'$');
         if (lastDollar > 0) {
           ctx._pressureBuf = ctx._pressureBuf.substring(lastDollar);
@@ -277,97 +428,145 @@ class BleManager extends ChangeNotifier {
         }
       }
 
-      while (true) {
-        final start = ctx._pressureBuf.indexOf(r'$');
-        if (start < 0) {
+      // 高效的帧解析
+      int start = 0;
+      while (start < ctx._pressureBuf.length) {
+        final dollarIdx = ctx._pressureBuf.indexOf(r'$', start);
+        if (dollarIdx < 0) {
+          // 没有找到$，清空之前的内容
           ctx._pressureBuf = '';
           break;
         }
-        final end = ctx._pressureBuf.indexOf(';', start);
-        if (end < 0) {
-          if (start > 0) ctx._pressureBuf = ctx._pressureBuf.substring(start);
+
+        final semiIdx = ctx._pressureBuf.indexOf(';', dollarIdx);
+        if (semiIdx < 0) {
+          // 没有找到;，保留$之后的内容
+          ctx._pressureBuf = ctx._pressureBuf.substring(dollarIdx);
           break;
         }
 
-        final frame = ctx._pressureBuf.substring(start + 1, end);
-        ctx._pressureBuf = ctx._pressureBuf.substring(end + 1);
-
+        // 解析一个完整的帧
+        final frame = ctx._pressureBuf.substring(dollarIdx + 1, semiIdx);
         final fields = frame.split(',');
-        if (fields.length >= 3) {
-          final p1 = double.tryParse(fields[0].trim()) ?? 0;
-          final p2 = double.tryParse(fields[1].trim()) ?? 0;
-          final p3 = double.tryParse(fields[2].trim()) ?? 0;
-          ctx.pressure.p1 = p1;
-          ctx.pressure.p2 = p2;
-          ctx.pressure.p3 = p3;
-          ctx.lastUpdate = DateTime.now();
 
-          // 更新压力缓存
-          if (ctx.role == DeviceRole.pressureLeft) {
-            _lastPressureL = ctx.pressure.copy();
-          } else if (ctx.role == DeviceRole.pressureRight) {
-            _lastPressureR = ctx.pressure.copy();
+        if (fields.length >= 3) {
+          try {
+            ctx.pressure.p1 = double.tryParse(fields[0].trim()) ?? ctx.pressure.p1;
+            ctx.pressure.p2 = double.tryParse(fields[1].trim()) ?? ctx.pressure.p2;
+            ctx.pressure.p3 = double.tryParse(fields[2].trim()) ?? ctx.pressure.p3;
+            ctx.lastUpdate = DateTime.now();
+            ctx._dataPacketsProcessed++;
+          } catch (_) {
+            // 解析单个值失败，继续
           }
-          notifyListeners();
         }
+
+        start = semiIdx + 1;
+      }
+
+      // 清理已处理的数据
+      if (start > 0 && start < ctx._pressureBuf.length) {
+        ctx._pressureBuf = ctx._pressureBuf.substring(start);
+      } else if (start > 0) {
+        ctx._pressureBuf = '';
       }
     } catch (e) {
       _log(ctx.role, '压力解析异常: $e');
     }
   }
 
+  /// IMU数据：20字节二进制帧，帧头0x55 0x61
   void _handleImuData(DeviceContext ctx, List<int> data) {
     try {
       ctx._imuBuf.addAll(data);
-      if (ctx._imuBuf.length > 256) {
-        ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 64);
+
+      // 防止缓冲区过大（更大的缓冲区以适应高速数据流）
+      if (ctx._imuBuf.length > 512) {
+        // 保留最后256字节
+        ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 256);
       }
 
-      while (ctx._imuBuf.length >= 20) {
-        int idx = -1;
-        for (int i = 0; i < ctx._imuBuf.length - 1; i++) {
-          if (ctx._imuBuf[i] == 0x55 && ctx._imuBuf[i + 1] == 0x61) {
-            idx = i;
-            break;
-          }
-        }
+      // 高效的帧头搜索：使用快速的字节对比
+      int frameCount = 0;
+      while (ctx._imuBuf.length >= 20 && frameCount < 5) {
+        // 查找帧头 0x55 0x61
+        int idx = _findFrameHeader(ctx._imuBuf);
+        
         if (idx < 0) {
-          if (ctx._imuBuf.length > 1) ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 1);
+          // 没找到帧头，保留最后1字节以防帧头被切断
+          if (ctx._imuBuf.length > 1) {
+            ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 1);
+          }
           break;
         }
-        if (idx > 0) ctx._imuBuf.removeRange(0, idx);
+
+        // 删除帧头前的数据
+        if (idx > 0) {
+          ctx._imuBuf.removeRange(0, idx);
+        }
+
         if (ctx._imuBuf.length < 20) break;
 
-        final bytes = Uint8List.fromList(ctx._imuBuf.sublist(0, 20));
-        final bd = ByteData.sublistView(bytes);
+        // 解析20字节帧
+        try {
+          _parseImuFrame(ctx, ctx._imuBuf.sublist(0, 20));
+          ctx._dataPacketsProcessed++;
+        } catch (e) {
+          // 帧解析失败，跳过这个字节
+          if (ctx._imuBuf.length > 1) {
+            ctx._imuBuf.removeRange(0, 1);
+          } else {
+            break;
+          }
+          continue;
+        }
 
-        final accX = bd.getInt16(2, Endian.little);
-        final accY = bd.getInt16(4, Endian.little);
-        final accZ = bd.getInt16(6, Endian.little);
-        final gyroX = bd.getInt16(8, Endian.little);
-        final gyroY = bd.getInt16(10, Endian.little);
-        final gyroZ = bd.getInt16(12, Endian.little);
-        final roll = bd.getInt16(14, Endian.little);
-        final pitch = bd.getInt16(16, Endian.little);
-        final yaw = bd.getInt16(18, Endian.little);
-
-        ctx.imu.accX = accX / 32768.0 * 16.0;
-        ctx.imu.accY = accY / 32768.0 * 16.0;
-        ctx.imu.accZ = accZ / 32768.0 * 16.0;
-        ctx.imu.gyroX = gyroX / 32768.0 * 2000.0;
-        ctx.imu.gyroY = gyroY / 32768.0 * 2000.0;
-        ctx.imu.gyroZ = gyroZ / 32768.0 * 2000.0;
-        ctx.imu.roll = roll / 32768.0 * 180.0;
-        ctx.imu.pitch = pitch / 32768.0 * 180.0;
-        ctx.imu.yaw = yaw / 32768.0 * 180.0;
-
-        ctx.lastUpdate = DateTime.now();
+        // 成功解析，删除已处理的帧
         ctx._imuBuf.removeRange(0, 20);
-        notifyListeners();
+        frameCount++;
       }
     } catch (e) {
       _log(ctx.role, 'IMU解析异常: $e');
     }
+  }
+
+  /// 快速查找IMU帧头
+  int _findFrameHeader(List<int> buf) {
+    for (int i = 0; i < buf.length - 1; i++) {
+      if (buf[i] == 0x55 && buf[i + 1] == 0x61) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /// 解析单个IMU帧
+  void _parseImuFrame(DeviceContext ctx, List<int> frameBytes) {
+    final bytes = Uint8List.fromList(frameBytes);
+    final bd = ByteData.sublistView(bytes);
+
+    // 小端序 int16
+    final accX = bd.getInt16(2, Endian.little);
+    final accY = bd.getInt16(4, Endian.little);
+    final accZ = bd.getInt16(6, Endian.little);
+    final gyroX = bd.getInt16(8, Endian.little);
+    final gyroY = bd.getInt16(10, Endian.little);
+    final gyroZ = bd.getInt16(12, Endian.little);
+    final roll = bd.getInt16(14, Endian.little);
+    final pitch = bd.getInt16(16, Endian.little);
+    final yaw = bd.getInt16(18, Endian.little);
+
+    ctx.imu.accX = accX / 32768.0 * 16.0;
+    ctx.imu.accY = accY / 32768.0 * 16.0;
+    ctx.imu.accZ = accZ / 32768.0 * 16.0;
+    ctx.imu.gyroX = gyroX / 32768.0 * 2000.0;
+    ctx.imu.gyroY = gyroY / 32768.0 * 2000.0;
+    ctx.imu.gyroZ = gyroZ / 32768.0 * 2000.0;
+    ctx.imu.roll = roll / 32768.0 * 180.0;
+    ctx.imu.pitch = pitch / 32768.0 * 180.0;
+    ctx.imu.yaw = yaw / 32768.0 * 180.0;
+
+    ctx.lastUpdate = DateTime.now();
   }
 
   // ─────────────────────────── 断开 ───────────────────────────
@@ -382,7 +581,11 @@ class BleManager extends ChangeNotifier {
     for (final ctx in _contexts.values) {
       await _disconnectInternal(ctx);
     }
-    if (_recording) stopRecording();
+    if (_recording) {
+      stopRecording();
+    }
+    _dataProcessTimer?.cancel();
+    _dataProcessTimer = null;
     notifyListeners();
   }
 
@@ -407,41 +610,41 @@ class BleManager extends ChangeNotifier {
     ctx.deviceName = '';
     ctx.deviceId = '';
     ctx.resetData();
+    _dataQueue[ctx.role]?.clear();
   }
 
-  // ─────────────────────────── 录制（惯性100Hz，压力25Hz）───────────────────────────
+  // ─────────────────────────── 录制 ───────────────────────────
 
   void startRecording() {
     if (_recording) return;
     _records.clear();
     _recording = true;
 
-    // 重置压力缓存
-    _lastPressureL = null;
-    _lastPressureR = null;
-
-    // 惯性 100Hz：每 10ms 记录一次（仅惯性，压力复用上次值）
-    _imuTimer = Timer.periodic(const Duration(milliseconds: 10), (_) {
-      _captureImuOnly();
+    // 压力传感器：25Hz（采样间隔40ms）
+    _pressureRecordTimer = Timer.periodic(const Duration(milliseconds: 40), (_) {
+      if (!_recording) return;
+      _lastPressureL = _contexts[DeviceRole.pressureLeft]!.pressure.copy();
+      _lastPressureR = _contexts[DeviceRole.pressureRight]!.pressure.copy();
     });
 
-    // 压力 25Hz：每 40ms 记录一次（同时记录当前惯性数据）
-    _pressureTimer = Timer.periodic(const Duration(milliseconds: 40), (_) {
-      _capturePressureAndImu();
+    // 惯性传感器：100Hz（采样间隔10ms）
+    _imuRecordTimer = Timer.periodic(const Duration(milliseconds: 10), (_) {
+      if (!_recording) return;
+      _captureOneRecord();
     });
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 (IMU:100Hz, Pressure:25Hz)');
+    debugPrint('[Record] 开始录制 - 压力25Hz + 惯性100Hz');
   }
 
   void stopRecording() {
     _recording = false;
-    _imuTimer?.cancel();
-    _pressureTimer?.cancel();
-    _imuTimer = null;
-    _pressureTimer = null;
+    _pressureRecordTimer?.cancel();
+    _imuRecordTimer?.cancel();
+    _pressureRecordTimer = null;
+    _imuRecordTimer = null;
     notifyListeners();
-    debugPrint('[Record] 停止录制，共${_records.length}条记录');
+    debugPrint('[Record] 停止录制，共${_records.length}条');
   }
 
   void setLabel(String label) {
@@ -454,41 +657,18 @@ class BleManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 仅记录惯性数据（100Hz），压力复用上一次有效值
-  void _captureImuOnly() {
+  void _captureOneRecord() {
+    // 使用缓存的最新压力值（由压力采样定时器更新）
+    // 使用当前的惯性值（高频采样）
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
-    // 压力使用缓存（若从未收到则 null）
-    final PressureData? pL = _lastPressureL?.copy();
-    final PressureData? pR = _lastPressureR?.copy();
-
     final rec = GaitRecord(
       timestamp: DateTime.now().toIso8601String(),
-      pressureL: pL,
-      pressureR: pR,
-      imuL: iL,
+      pressureR: _lastPressureR,
       imuR: iR,
-      label: _currentLabel,
-    );
-    _records.add(rec);
-    notifyListeners();
-  }
-
-  /// 同时记录压力和当前惯性数据（25Hz）
-  void _capturePressureAndImu() {
-    final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
-    final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
-
-    final PressureData? pL = _lastPressureL?.copy();
-    final PressureData? pR = _lastPressureR?.copy();
-
-    final rec = GaitRecord(
-      timestamp: DateTime.now().toIso8601String(),
-      pressureL: pL,
-      pressureR: pR,
+      pressureL: _lastPressureL,
       imuL: iL,
-      imuR: iR,
       label: _currentLabel,
     );
     _records.add(rec);
@@ -504,8 +684,9 @@ class BleManager extends ChangeNotifier {
 
   @override
   void dispose() {
-    _imuTimer?.cancel();
-    _pressureTimer?.cancel();
+    _pressureRecordTimer?.cancel();
+    _imuRecordTimer?.cancel();
+    _dataProcessTimer?.cancel();
     _scanSub?.cancel();
     for (final ctx in _contexts.values) {
       ctx.notifySub?.cancel();
