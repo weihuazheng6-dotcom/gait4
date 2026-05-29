@@ -58,7 +58,8 @@ class BleManager extends ChangeNotifier {
   bool _recording = false;
   String _currentLabel = '0';
   final List<GaitRecord> _records = [];
-  Timer? _recordTimer;
+  Timer? _imuTimer;      // 100Hz 定时器
+  Timer? _pressureTimer; // 25Hz 定时器
 
   // 压力数据缓存（上一次有效值）
   PressureData? _lastPressureL;
@@ -408,7 +409,7 @@ class BleManager extends ChangeNotifier {
     ctx.resetData();
   }
 
-  // ─────────────────────────── 录制（100Hz统一采样，压力复用缓存） ───────────────────────────
+  // ─────────────────────────── 录制（惯性100Hz，压力25Hz）───────────────────────────
 
   void startRecording() {
     if (_recording) return;
@@ -419,19 +420,26 @@ class BleManager extends ChangeNotifier {
     _lastPressureL = null;
     _lastPressureR = null;
 
-    // 100Hz 采样：每10ms记录一次
-    _recordTimer = Timer.periodic(const Duration(milliseconds: 10), (_) {
-      _captureRecord();
+    // 惯性 100Hz：每 10ms 记录一次（仅惯性，压力复用上次值）
+    _imuTimer = Timer.periodic(const Duration(milliseconds: 10), (_) {
+      _captureImuOnly();
+    });
+
+    // 压力 25Hz：每 40ms 记录一次（同时记录当前惯性数据）
+    _pressureTimer = Timer.periodic(const Duration(milliseconds: 40), (_) {
+      _capturePressureAndImu();
     });
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 (100Hz, 压力复用上一次有效值)');
+    debugPrint('[Record] 开始录制 (IMU:100Hz, Pressure:25Hz)');
   }
 
   void stopRecording() {
     _recording = false;
-    _recordTimer?.cancel();
-    _recordTimer = null;
+    _imuTimer?.cancel();
+    _pressureTimer?.cancel();
+    _imuTimer = null;
+    _pressureTimer = null;
     notifyListeners();
     debugPrint('[Record] 停止录制，共${_records.length}条记录');
   }
@@ -446,12 +454,32 @@ class BleManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _captureRecord() {
-    // 获取当前惯性数据（始终最新）
+  /// 仅记录惯性数据（100Hz），压力复用上一次有效值
+  void _captureImuOnly() {
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
-    // 压力数据使用缓存（上一次有效值，可为null）
+    // 压力使用缓存（若从未收到则 null）
+    final PressureData? pL = _lastPressureL?.copy();
+    final PressureData? pR = _lastPressureR?.copy();
+
+    final rec = GaitRecord(
+      timestamp: DateTime.now().toIso8601String(),
+      pressureL: pL,
+      pressureR: pR,
+      imuL: iL,
+      imuR: iR,
+      label: _currentLabel,
+    );
+    _records.add(rec);
+    notifyListeners();
+  }
+
+  /// 同时记录压力和当前惯性数据（25Hz）
+  void _capturePressureAndImu() {
+    final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
+    final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
+
     final PressureData? pL = _lastPressureL?.copy();
     final PressureData? pR = _lastPressureR?.copy();
 
@@ -476,7 +504,8 @@ class BleManager extends ChangeNotifier {
 
   @override
   void dispose() {
-    _recordTimer?.cancel();
+    _imuTimer?.cancel();
+    _pressureTimer?.cancel();
     _scanSub?.cancel();
     for (final ctx in _contexts.values) {
       ctx.notifySub?.cancel();
