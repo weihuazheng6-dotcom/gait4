@@ -415,7 +415,7 @@ class BleManager extends ChangeNotifier {
     _records.clear();
     _recording = true;
 
-    // 重置压力缓存（可选）
+    // 重置压力缓存
     _lastPressureL = null;
     _lastPressureR = null;
 
@@ -451,9 +451,9 @@ class BleManager extends ChangeNotifier {
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
-    // 压力数据使用缓存（上一次有效值，可为null）
-    final pL = _lastPressureL?.copy();
-    final pR = _lastPressureR?.copy();
+    // 压力数据：如果缓存存在则拷贝，否则为 null
+    final PressureData? pL = _lastPressureL?.copy();
+    final PressureData? pR = _lastPressureR?.copy();
 
     final rec = GaitRecord(
       timestamp: DateTime.now().toIso8601String(),
