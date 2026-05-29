@@ -78,9 +78,9 @@ class ImuData {
 /// 单次采样记录（一行CSV）
 class GaitRecord {
   final String timestamp;
-  final PressureData pressureR;
+  final PressureData? pressureR;   // 改为可空
   final ImuData imuR;
-  final PressureData pressureL;
+  final PressureData? pressureL;   // 改为可空
   final ImuData imuL;
   final String label;
 
@@ -93,15 +93,18 @@ class GaitRecord {
     required this.label,
   });
 
-  /// 转CSV行（26列）
+  /// 转CSV行（26列，压力缺失时填0）
   List<String> toCsvRow() {
     String f1(double v) => v.toStringAsFixed(1);
     String f3(double v) => v.toStringAsFixed(3);
 
+    // 辅助函数：压力转字符串，若null则返回'0'
+    String pressureVal(double? v) => v != null ? f1(v) : '0';
+
     return [
       timestamp,
       // 右脚压力 3
-      f1(pressureR.p1), f1(pressureR.p2), f1(pressureR.p3),
+      pressureVal(pressureR?.p1), pressureVal(pressureR?.p2), pressureVal(pressureR?.p3),
       // 右脚加速度 3
       f3(imuR.accX), f3(imuR.accY), f3(imuR.accZ),
       // 右脚角速度 3
@@ -109,7 +112,7 @@ class GaitRecord {
       // 右脚欧拉角 3
       f1(imuR.roll), f1(imuR.pitch), f1(imuR.yaw),
       // 左脚压力 3
-      f1(pressureL.p1), f1(pressureL.p2), f1(pressureL.p3),
+      pressureVal(pressureL?.p1), pressureVal(pressureL?.p2), pressureVal(pressureL?.p3),
       // 左脚加速度 3
       f3(imuL.accX), f3(imuL.accY), f3(imuL.accZ),
       // 左脚角速度 3
