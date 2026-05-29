@@ -1,490 +1,140 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:typed_data';
-import 'package:flutter/foundation.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import '../models/gait_data.dart';
-
-/// BLE UUID常量
-class BleUuids {
-  static final Guid pressureService = Guid('0000FFE0-0000-1000-8000-00805F9B34FB');
-  static final Guid pressureNotify  = Guid('0000FFE1-0000-1000-8000-00805F9B34FB');
-
-  static final Guid imuService = Guid('0000FFE5-0000-1000-8000-00805F9A34FB');
-  static final Guid imuNotify  = Guid('0000FFE4-0000-1000-8000-00805F9A34FB');
-  static final Guid imuWrite   = Guid('0000FFE9-0000-1000-8000-00805F9A34FB');
+/// 设备角色
+enum DeviceRole {
+  pressureLeft,   // 左脚压力
+  pressureRight,  // 右脚压力
+  imuLeft,        // 左脚IMU
+  imuRight,       // 右脚IMU
 }
 
-/// 单个设备连接的上下文
-class DeviceContext {
-  DeviceRole role;
-  BluetoothDevice? device;
-  ConnectionStatus status = ConnectionStatus.disconnected;
-  StreamSubscription<BluetoothConnectionState>? connSub;
-  StreamSubscription<List<int>>? notifySub;
+extension DeviceRoleX on DeviceRole {
+  String get label {
+    switch (this) {
+      case DeviceRole.pressureLeft: return '左脚压力';
+      case DeviceRole.pressureRight: return '右脚压力';
+      case DeviceRole.imuLeft: return '左脚IMU';
+      case DeviceRole.imuRight: return '右脚IMU';
+    }
+  }
 
-  PressureData pressure = PressureData();
-  ImuData imu = ImuData();
+  bool get isPressure =>
+      this == DeviceRole.pressureLeft || this == DeviceRole.pressureRight;
 
-  final List<int> _imuBuf = [];
-  String _pressureBuf = '';
+  bool get isIMU =>
+      this == DeviceRole.imuLeft || this == DeviceRole.imuRight;
 
-  String deviceName = '';
-  String deviceId = '';
-  DateTime? lastUpdate;
+  bool get isLeft =>
+      this == DeviceRole.pressureLeft || this == DeviceRole.imuLeft;
+}
 
-  DeviceContext(this.role);
+/// 连接状态
+enum ConnectionStatus {
+  disconnected,
+  connecting,
+  connected,
+  failed,
+}
 
-  void resetData() {
-    pressure = PressureData();
-    imu = ImuData();
-    _imuBuf.clear();
-    _pressureBuf = '';
+extension ConnectionStatusX on ConnectionStatus {
+  String get label {
+    switch (this) {
+      case ConnectionStatus.disconnected: return '未连接';
+      case ConnectionStatus.connecting: return '连接中';
+      case ConnectionStatus.connected: return '已连接';
+      case ConnectionStatus.failed: return '连接失败';
+    }
   }
 }
 
-class BleManager extends ChangeNotifier {
-  final Map<DeviceRole, DeviceContext> _contexts = {
-    DeviceRole.pressureLeft:  DeviceContext(DeviceRole.pressureLeft),
-    DeviceRole.pressureRight: DeviceContext(DeviceRole.pressureRight),
-    DeviceRole.imuLeft:       DeviceContext(DeviceRole.imuLeft),
-    DeviceRole.imuRight:      DeviceContext(DeviceRole.imuRight),
-  };
+/// 压力数据
+class PressureData {
+  double p1; // 第一跖骨
+  double p2; // 第五跖骨
+  double p3; // 脚跟
 
-  final List<ScanResult> _scanResults = [];
-  bool _scanning = false;
-  StreamSubscription<List<ScanResult>>? _scanSub;
+  PressureData({this.p1 = 0, this.p2 = 0, this.p3 = 0});
 
-  bool _recording = false;
-  String _currentLabel = '0';
-  final List<GaitRecord> _records = [];
-  Timer? _recordTimer;
+  PressureData copy() => PressureData(p1: p1, p2: p2, p3: p3);
+}
 
-  // 压力数据缓存（上一次有效值）
-  PressureData? _lastPressureL;
-  PressureData? _lastPressureR;
+/// IMU数据
+class ImuData {
+  double accX, accY, accZ;      // 加速度 g
+  double gyroX, gyroY, gyroZ;   // 角速度 °/s
+  double roll, pitch, yaw;      // 欧拉角 °
 
-  DeviceContext getContext(DeviceRole role) => _contexts[role]!;
-  List<ScanResult> get scanResults => List.unmodifiable(_scanResults);
-  bool get isScanning => _scanning;
-  bool get isRecording => _recording;
-  String get currentLabel => _currentLabel;
-  int get recordCount => _records.length;
-  List<GaitRecord> get records => List.unmodifiable(_records);
-  int get connectedCount => _contexts.values.where((c) => c.status == ConnectionStatus.connected).length;
+  ImuData({
+    this.accX = 0, this.accY = 0, this.accZ = 0,
+    this.gyroX = 0, this.gyroY = 0, this.gyroZ = 0,
+    this.roll = 0, this.pitch = 0, this.yaw = 0,
+  });
 
-  // ─────────────────────────── 扫描 ───────────────────────────
+  ImuData copy() => ImuData(
+    accX: accX, accY: accY, accZ: accZ,
+    gyroX: gyroX, gyroY: gyroY, gyroZ: gyroZ,
+    roll: roll, pitch: pitch, yaw: yaw,
+  );
+}
 
-  Future<void> startScan({int timeoutSec = 12}) async {
-    if (_scanning) return;
-    _scanResults.clear();
-    _scanning = true;
-    notifyListeners();
+/// 单次采样记录（一行CSV）
+class GaitRecord {
+  final String timestamp;
+  final PressureData? pressureR;   // 改为可空
+  final ImuData imuR;
+  final PressureData? pressureL;   // 改为可空
+  final ImuData imuL;
+  final String label;
 
-    try {
-      if (await FlutterBluePlus.isSupported == false) {
-        debugPrint('[BLE] 设备不支持蓝牙');
-        _scanning = false;
-        notifyListeners();
-        return;
-      }
+  GaitRecord({
+    required this.timestamp,
+    required this.pressureR,
+    required this.imuR,
+    required this.pressureL,
+    required this.imuL,
+    required this.label,
+  });
 
-      await _scanSub?.cancel();
-      _scanSub = FlutterBluePlus.scanResults.listen((results) {
-        _scanResults
-          ..clear()
-          ..addAll(results);
-        notifyListeners();
-      }, onError: (e) {
-        debugPrint('[BLE] 扫描流错误: $e');
-      });
+  /// 转CSV行（26列，压力缺失时填0）
+  List<String> toCsvRow() {
+    String f1(double v) => v.toStringAsFixed(1);
+    String f3(double v) => v.toStringAsFixed(3);
 
-      await FlutterBluePlus.startScan(
-        timeout: Duration(seconds: timeoutSec),
-        androidUsesFineLocation: true,
-      );
+    // 辅助函数：压力转字符串，若null则返回'0'
+    String pressureVal(double? v) => v != null ? f1(v) : '0';
 
-      await Future.delayed(Duration(seconds: timeoutSec));
-    } catch (e) {
-      debugPrint('[BLE] 启动扫描失败: $e');
-    } finally {
-      _scanning = false;
-      await _scanSub?.cancel();
-      _scanSub = null;
-      notifyListeners();
-    }
+    return [
+      timestamp,
+      // 右脚压力 3
+      pressureVal(pressureR?.p1), pressureVal(pressureR?.p2), pressureVal(pressureR?.p3),
+      // 右脚加速度 3
+      f3(imuR.accX), f3(imuR.accY), f3(imuR.accZ),
+      // 右脚角速度 3
+      f1(imuR.gyroX), f1(imuR.gyroY), f1(imuR.gyroZ),
+      // 右脚欧拉角 3
+      f1(imuR.roll), f1(imuR.pitch), f1(imuR.yaw),
+      // 左脚压力 3
+      pressureVal(pressureL?.p1), pressureVal(pressureL?.p2), pressureVal(pressureL?.p3),
+      // 左脚加速度 3
+      f3(imuL.accX), f3(imuL.accY), f3(imuL.accZ),
+      // 左脚角速度 3
+      f1(imuL.gyroX), f1(imuL.gyroY), f1(imuL.gyroZ),
+      // 左脚欧拉角 3
+      f1(imuL.roll), f1(imuL.pitch), f1(imuL.yaw),
+      // 标签
+      label,
+    ];
   }
 
-  Future<void> stopScan() async {
-    try {
-      await FlutterBluePlus.stopScan();
-    } catch (e) {
-      debugPrint('[BLE] 停止扫描失败: $e');
-    }
-    _scanning = false;
-    await _scanSub?.cancel();
-    _scanSub = null;
-    notifyListeners();
-  }
-
-  // ─────────────────────────── 连接 ───────────────────────────
-
-  Future<bool> connectDevice(BluetoothDevice device, DeviceRole role) async {
-    final ctx = _contexts[role]!;
-
-    if (ctx.device != null) {
-      await _disconnectInternal(ctx);
-    }
-
-    ctx.device = device;
-    ctx.deviceName = device.platformName.isNotEmpty
-        ? device.platformName
-        : (device.advName.isNotEmpty ? device.advName : '未知设备');
-    ctx.deviceId = device.remoteId.str;
-    ctx.status = ConnectionStatus.connecting;
-    notifyListeners();
-    _log(role, '开始连接 $ctx.deviceName (${ctx.deviceId})');
-
-    try {
-      await ctx.connSub?.cancel();
-      ctx.connSub = device.connectionState.listen((state) {
-        _log(role, '连接状态: $state');
-        if (state == BluetoothConnectionState.disconnected) {
-          ctx.status = ConnectionStatus.disconnected;
-          ctx.resetData();
-          notifyListeners();
-        }
-      });
-
-      await device.connect(
-        timeout: const Duration(seconds: 15),
-        autoConnect: false,
-      );
-
-      try {
-        await device.requestMtu(247);
-      } catch (_) {}
-
-      final services = await device.discoverServices();
-      _log(role, '发现 ${services.length} 个服务');
-
-      if (role.isPressure) {
-        await _setupPressure(ctx, services);
-      } else {
-        await _setupIMU(ctx, services);
-      }
-
-      ctx.status = ConnectionStatus.connected;
-      ctx.lastUpdate = DateTime.now();
-      notifyListeners();
-      _log(role, '✅ 连接成功');
-      return true;
-    } catch (e) {
-      _log(role, '❌ 连接失败: $e');
-      ctx.status = ConnectionStatus.failed;
-      notifyListeners();
-      try {
-        await device.disconnect();
-      } catch (_) {}
-      return false;
-    }
-  }
-
-  Future<void> _setupPressure(DeviceContext ctx, List<BluetoothService> services) async {
-    BluetoothCharacteristic? notifyChar;
-    for (final s in services) {
-      final serviceUuidStr = s.uuid.str.toUpperCase();
-      if (serviceUuidStr.contains('FFE0')) {
-        for (final c in s.characteristics) {
-          final charUuidStr = c.uuid.str.toUpperCase();
-          if (charUuidStr.contains('FFE1') && c.properties.notify) {
-            notifyChar = c;
-            break;
-          }
-        }
-      }
-      if (notifyChar != null) break;
-    }
-    if (notifyChar == null) throw Exception('未找到压力传感器FFE1特征');
-
-    await _enableNotifyWithRetry(notifyChar);
-    await ctx.notifySub?.cancel();
-    ctx.notifySub = notifyChar.lastValueStream.listen((data) {
-      _handlePressureData(ctx, data);
-    }, onError: (e) {
-      _log(ctx.role, 'Notify错误: $e');
-    });
-    _log(ctx.role, '✅ 压力Notify已开启');
-  }
-
-  Future<void> _setupIMU(DeviceContext ctx, List<BluetoothService> services) async {
-    BluetoothCharacteristic? notifyChar;
-    for (final s in services) {
-      final serviceUuidStr = s.uuid.str.toUpperCase();
-      if (serviceUuidStr.contains('FFE5')) {
-        for (final c in s.characteristics) {
-          final charUuidStr = c.uuid.str.toUpperCase();
-          if (charUuidStr.contains('FFE4') && c.properties.notify) {
-            notifyChar = c;
-            break;
-          }
-        }
-      }
-      if (notifyChar != null) break;
-    }
-    if (notifyChar == null) throw Exception('未找到IMU FFE4特征');
-
-    await _enableNotifyWithRetry(notifyChar);
-    await ctx.notifySub?.cancel();
-    ctx.notifySub = notifyChar.lastValueStream.listen((data) {
-      _handleImuData(ctx, data);
-    }, onError: (e) {
-      _log(ctx.role, 'Notify错误: $e');
-    });
-    _log(ctx.role, '✅ IMU Notify已开启');
-  }
-
-  Future<void> _enableNotifyWithRetry(BluetoothCharacteristic char, {int retries = 3}) async {
-    Exception? lastErr;
-    for (int i = 0; i < retries; i++) {
-      try {
-        await char.setNotifyValue(true);
-        await Future.delayed(const Duration(milliseconds: 200));
-        return;
-      } catch (e) {
-        lastErr = e is Exception ? e : Exception(e.toString());
-        debugPrint('[BLE] setNotifyValue重试 ${i + 1}/$retries: $e');
-        await Future.delayed(const Duration(milliseconds: 500));
-      }
-    }
-    throw lastErr ?? Exception('setNotifyValue失败');
-  }
-
-  // ─────────────────────────── 数据解析 ───────────────────────────
-
-  void _handlePressureData(DeviceContext ctx, List<int> data) {
-    try {
-      final text = ascii.decode(data, allowInvalid: true);
-      ctx._pressureBuf += text;
-
-      if (ctx._pressureBuf.length > 512) {
-        final lastDollar = ctx._pressureBuf.lastIndexOf(r'$');
-        if (lastDollar > 0) {
-          ctx._pressureBuf = ctx._pressureBuf.substring(lastDollar);
-        } else {
-          ctx._pressureBuf = '';
-        }
-      }
-
-      while (true) {
-        final start = ctx._pressureBuf.indexOf(r'$');
-        if (start < 0) {
-          ctx._pressureBuf = '';
-          break;
-        }
-        final end = ctx._pressureBuf.indexOf(';', start);
-        if (end < 0) {
-          if (start > 0) ctx._pressureBuf = ctx._pressureBuf.substring(start);
-          break;
-        }
-
-        final frame = ctx._pressureBuf.substring(start + 1, end);
-        ctx._pressureBuf = ctx._pressureBuf.substring(end + 1);
-
-        final fields = frame.split(',');
-        if (fields.length >= 3) {
-          final p1 = double.tryParse(fields[0].trim()) ?? 0;
-          final p2 = double.tryParse(fields[1].trim()) ?? 0;
-          final p3 = double.tryParse(fields[2].trim()) ?? 0;
-          ctx.pressure.p1 = p1;
-          ctx.pressure.p2 = p2;
-          ctx.pressure.p3 = p3;
-          ctx.lastUpdate = DateTime.now();
-
-          // 更新压力缓存
-          if (ctx.role == DeviceRole.pressureLeft) {
-            _lastPressureL = ctx.pressure.copy();
-          } else if (ctx.role == DeviceRole.pressureRight) {
-            _lastPressureR = ctx.pressure.copy();
-          }
-          notifyListeners();
-        }
-      }
-    } catch (e) {
-      _log(ctx.role, '压力解析异常: $e');
-    }
-  }
-
-  void _handleImuData(DeviceContext ctx, List<int> data) {
-    try {
-      ctx._imuBuf.addAll(data);
-      if (ctx._imuBuf.length > 256) {
-        ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 64);
-      }
-
-      while (ctx._imuBuf.length >= 20) {
-        int idx = -1;
-        for (int i = 0; i < ctx._imuBuf.length - 1; i++) {
-          if (ctx._imuBuf[i] == 0x55 && ctx._imuBuf[i + 1] == 0x61) {
-            idx = i;
-            break;
-          }
-        }
-        if (idx < 0) {
-          if (ctx._imuBuf.length > 1) ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 1);
-          break;
-        }
-        if (idx > 0) ctx._imuBuf.removeRange(0, idx);
-        if (ctx._imuBuf.length < 20) break;
-
-        final bytes = Uint8List.fromList(ctx._imuBuf.sublist(0, 20));
-        final bd = ByteData.sublistView(bytes);
-
-        final accX = bd.getInt16(2, Endian.little);
-        final accY = bd.getInt16(4, Endian.little);
-        final accZ = bd.getInt16(6, Endian.little);
-        final gyroX = bd.getInt16(8, Endian.little);
-        final gyroY = bd.getInt16(10, Endian.little);
-        final gyroZ = bd.getInt16(12, Endian.little);
-        final roll = bd.getInt16(14, Endian.little);
-        final pitch = bd.getInt16(16, Endian.little);
-        final yaw = bd.getInt16(18, Endian.little);
-
-        ctx.imu.accX = accX / 32768.0 * 16.0;
-        ctx.imu.accY = accY / 32768.0 * 16.0;
-        ctx.imu.accZ = accZ / 32768.0 * 16.0;
-        ctx.imu.gyroX = gyroX / 32768.0 * 2000.0;
-        ctx.imu.gyroY = gyroY / 32768.0 * 2000.0;
-        ctx.imu.gyroZ = gyroZ / 32768.0 * 2000.0;
-        ctx.imu.roll = roll / 32768.0 * 180.0;
-        ctx.imu.pitch = pitch / 32768.0 * 180.0;
-        ctx.imu.yaw = yaw / 32768.0 * 180.0;
-
-        ctx.lastUpdate = DateTime.now();
-        ctx._imuBuf.removeRange(0, 20);
-        notifyListeners();
-      }
-    } catch (e) {
-      _log(ctx.role, 'IMU解析异常: $e');
-    }
-  }
-
-  // ─────────────────────────── 断开 ───────────────────────────
-
-  Future<void> disconnectRole(DeviceRole role) async {
-    final ctx = _contexts[role]!;
-    await _disconnectInternal(ctx);
-    notifyListeners();
-  }
-
-  Future<void> disconnectAll() async {
-    for (final ctx in _contexts.values) {
-      await _disconnectInternal(ctx);
-    }
-    if (_recording) stopRecording();
-    notifyListeners();
-  }
-
-  Future<void> _disconnectInternal(DeviceContext ctx) async {
-    try {
-      await ctx.notifySub?.cancel();
-      await ctx.connSub?.cancel();
-      ctx.notifySub = null;
-      ctx.connSub = null;
-      if (ctx.device != null) {
-        try {
-          await ctx.device!.disconnect();
-        } catch (e) {
-          debugPrint('[BLE] 断开异常: $e');
-        }
-      }
-    } catch (e) {
-      debugPrint('[BLE] 清理异常: $e');
-    }
-    ctx.device = null;
-    ctx.status = ConnectionStatus.disconnected;
-    ctx.deviceName = '';
-    ctx.deviceId = '';
-    ctx.resetData();
-  }
-
-  // ─────────────────────────── 录制（100Hz统一采样，压力复用缓存） ───────────────────────────
-
-  void startRecording() {
-    if (_recording) return;
-    _records.clear();
-    _recording = true;
-
-    // 重置压力缓存
-    _lastPressureL = null;
-    _lastPressureR = null;
-
-    // 100Hz 采样：每10ms记录一次
-    _recordTimer = Timer.periodic(const Duration(milliseconds: 10), (_) {
-      _captureRecord();
-    });
-
-    notifyListeners();
-    debugPrint('[Record] 开始录制 (100Hz, 压力复用上一次有效值)');
-  }
-
-  void stopRecording() {
-    _recording = false;
-    _recordTimer?.cancel();
-    _recordTimer = null;
-    notifyListeners();
-    debugPrint('[Record] 停止录制，共${_records.length}条记录');
-  }
-
-  void setLabel(String label) {
-    _currentLabel = label;
-    notifyListeners();
-  }
-
-  void clearRecords() {
-    _records.clear();
-    notifyListeners();
-  }
-
-  void _captureRecord() {
-    // 获取当前惯性数据（始终最新）
-    final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
-    final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
-
-    // 压力数据使用缓存（上一次有效值，可为null）
-    final PressureData? pL = _lastPressureL?.copy();
-    final PressureData? pR = _lastPressureR?.copy();
-
-    final rec = GaitRecord(
-      timestamp: DateTime.now().toIso8601String(),
-      pressureL: pL,
-      pressureR: pR,
-      imuL: iL,
-      imuR: iR,
-      label: _currentLabel,
-    );
-    _records.add(rec);
-    notifyListeners();
-  }
-
-  // ─────────────────────────── 工具 ───────────────────────────
-
-  void _log(DeviceRole role, String msg) {
-    final ts = DateTime.now().toIso8601String();
-    debugPrint('[$ts][${role.label}] $msg');
-  }
-
-  @override
-  void dispose() {
-    _recordTimer?.cancel();
-    _scanSub?.cancel();
-    for (final ctx in _contexts.values) {
-      ctx.notifySub?.cancel();
-      ctx.connSub?.cancel();
-      try {
-        ctx.device?.disconnect();
-      } catch (_) {}
-    }
-    super.dispose();
-  }
+  /// CSV表头
+  static List<String> csvHeader() => [
+    'timestamp',
+    'P_first_meta_R', 'P_Fifth_meta_R', 'P_heel_R',
+    'acc_x_R', 'acc_y_R', 'acc_z_R',
+    'ave_x_R', 'ave_y_R', 'ave_z_R',
+    'ang_x_R', 'ang_y_R', 'ang_z_R',
+    'P_first_meta_L', 'P_Fifth_meta_L', 'P_heel_L',
+    'acc_x_L', 'acc_y_L', 'acc_z_L',
+    'ave_x_L', 'ave_y_L', 'ave_z_L',
+    'ang_x_L', 'ang_y_L', 'ang_z_L',
+    'Label',
+  ];
 }
