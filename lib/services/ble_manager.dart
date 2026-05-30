@@ -207,10 +207,6 @@ class BleManager extends ChangeNotifier {
         await device.requestMtu(247);
       } catch (_) {}
 
-      // ========== 新增：请求更优蓝牙连接间隔（仅此一处改动） ==========
-      await _requestOptimalConnectionParameters(device, role);
-      // ===========================================================
-
       // 发现服务
       final services = await device.discoverServices();
       _log(role, '发现 ${services.length} 个服务');
@@ -238,31 +234,6 @@ class BleManager extends ChangeNotifier {
         await device.disconnect();
       } catch (_) {}
       return false;
-    }
-  }
-
-  /// 新增：请求最优连接间隔（Android 7.5ms，iOS 15ms）
-  Future<void> _requestOptimalConnectionParameters(BluetoothDevice device, DeviceRole role) async {
-    try {
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        // Android: 高优先级模式，期望连接间隔 7.5ms - 15ms
-        await device.requestConnectionPriority(
-          priority: ConnectionPriority.highPriority,
-        );
-        _log(role, '已请求 Android 高优先级连接参数 (期望 7.5-15ms)');
-      } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-        // iOS: 尝试请求，但系统通常会忽略或无法动态调整
-        try {
-          await device.requestConnectionPriority(
-            priority: ConnectionPriority.balanced,
-          );
-          _log(role, '已尝试 iOS 连接参数请求');
-        } catch (e) {
-          _log(role, 'iOS 连接参数请求被忽略（正常）: $e');
-        }
-      }
-    } catch (e) {
-      _log(role, '请求连接参数失败: $e');
     }
   }
 
