@@ -207,9 +207,9 @@ class BleManager extends ChangeNotifier {
         await device.requestMtu(247);
       } catch (_) {}
 
-      // ========== 新增：请求更优蓝牙连接间隔 ==========
+      // ========== 新增：请求更优蓝牙连接间隔（仅此一处改动） ==========
       await _requestOptimalConnectionParameters(device, role);
-      // ===========================================
+      // ===========================================================
 
       // 发现服务
       final services = await device.discoverServices();
@@ -252,7 +252,6 @@ class BleManager extends ChangeNotifier {
         _log(role, '已请求 Android 高优先级连接参数 (期望 7.5-15ms)');
       } else if (defaultTargetPlatform == TargetPlatform.iOS) {
         // iOS: 尝试请求，但系统通常会忽略或无法动态调整
-        // 这里仅做一个空调用，不报错即可
         try {
           await device.requestConnectionPriority(
             priority: ConnectionPriority.balanced,
