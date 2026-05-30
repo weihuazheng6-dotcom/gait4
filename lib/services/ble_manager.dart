@@ -246,22 +246,18 @@ class BleManager extends ChangeNotifier {
     try {
       if (defaultTargetPlatform == TargetPlatform.android) {
         // Android: 高优先级模式，期望连接间隔 7.5ms - 15ms
-        await device.requestConnectionParameters(
+        await device.requestConnectionPriority(
           priority: ConnectionPriority.highPriority,
         );
         _log(role, '已请求 Android 高优先级连接参数 (期望 7.5-15ms)');
       } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-        // iOS: 主动请求 15ms 连接间隔（系统可能忽略，但尝试无害）
+        // iOS: 尝试请求，但系统通常会忽略或无法动态调整
+        // 这里仅做一个空调用，不报错即可
         try {
-          await device.requestConnectionParameters(
-            parameters: PreferredConnectionParameters(
-              minInterval: 15,
-              maxInterval: 15,
-              latency: 0,
-              timeout: 2000,
-            ),
+          await device.requestConnectionPriority(
+            priority: ConnectionPriority.balanced,
           );
-          _log(role, '已请求 iOS 连接参数 (15ms)');
+          _log(role, '已尝试 iOS 连接参数请求');
         } catch (e) {
           _log(role, 'iOS 连接参数请求被忽略（正常）: $e');
         }
