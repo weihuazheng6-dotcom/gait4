@@ -1,6 +1,3 @@
-bash
-
-cat > /mnt/user-data/outputs/ble_manager_fixed_timestamp.dart << 'EOFFILE'
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -442,7 +439,6 @@ class BleManager extends ChangeNotifier {
           _parseImuFrame(ctx, ctx._imuBuf.sublist(0, 20));
           ctx._dataPacketsProcessed++;
           
-          // ✅ 修复：用真实时间戳采样
           if (_recording) {
             _captureOneRecord();
           }
@@ -548,7 +544,7 @@ class BleManager extends ChangeNotifier {
     _recording = true;
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 - 用真实时间戳');
+    debugPrint('[Record] 开始录制 - 真实时间戳（最终版）');
   }
 
   void stopRecording() {
@@ -568,12 +564,11 @@ class BleManager extends ChangeNotifier {
   }
 
   void _captureOneRecord() {
-    // ✅ 修复：用 DateTime.now() 获取真实时间戳
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
     final rec = GaitRecord(
-      timestamp: DateTime.now().toIso8601String(),  // ✅ 真实时间戳
+      timestamp: DateTime.now().toIso8601String(),
       pressureR: _contexts[DeviceRole.pressureRight]!.pressure.copy(),
       imuR: iR,
       pressureL: _contexts[DeviceRole.pressureLeft]!.pressure.copy(),
@@ -603,5 +598,3 @@ class BleManager extends ChangeNotifier {
     super.dispose();
   }
 }
-EOFFILE
-echo "✅ 时间戳修复版本已生成！"
