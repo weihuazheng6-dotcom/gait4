@@ -61,9 +61,12 @@ class BleManager extends ChangeNotifier {
   bool _recording = false;
   String _currentLabel = '0';
   final List<GaitRecord> _records = [];
-  
-  DateTime? _lastCaptureTime;
-  static const Duration _captureInterval = Duration(milliseconds: 10);  // 100Hz
+
+  // 压力插值记录
+  DateTime? _lastPressureLeftTime;
+  DateTime? _lastPressureRightTime;
+  PressureData _lastPressureLeft = PressureData();
+  PressureData _lastPressureRight = PressureData();
 
   final Map<DeviceRole, DateTime> _lastNotifyTime = {};
   static const Duration _notifyThrottle = Duration(milliseconds: 50);
@@ -397,6 +400,21 @@ class BleManager extends ChangeNotifier {
             ctx.pressure.p3 = double.tryParse(fields[2].trim()) ?? ctx.pressure.p3;
             ctx.lastUpdate = DateTime.now();
             ctx._dataPacketsProcessed++;
+            
+            // ✅ 记录压力更新时间（用于插值）
+            if (ctx.role == DeviceRole.pressureLeft) {
+              _lastPressureLeftTime = DateTime.now();
+              _lastPressureLeft = ctx.pressure.copy();
+            } else if (ctx.role == DeviceRole.pressureRight) {
+              _lastPressureRightTime = DateTime.now();
+              _lastPressureRight = ctx.pressure.copy();
+            }
+            
+            // ✅ 压力数据到达时采样
+            if (_recording) {
+              _captureOneRecord();
+            }
+            
           } catch (_) {}
         }
 
@@ -442,6 +460,7 @@ class BleManager extends ChangeNotifier {
           _parseImuFrame(ctx, ctx._imuBuf.sublist(0, 20));
           ctx._dataPacketsProcessed++;
           
+          // ✅ IMU 数据到达时采样（100Hz）
           if (_recording) {
             _captureOneRecord();
           }
@@ -545,10 +564,9 @@ class BleManager extends ChangeNotifier {
     if (_recording) return;
     _records.clear();
     _recording = true;
-    _lastCaptureTime = null;
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 - 真实时间戳 100Hz（完全版）');
+    debugPrint('[Record] 开始录制 - 压力插值100Hz + 真实IMU数据');
   }
 
   void stopRecording() {
@@ -567,25 +585,57 @@ class BleManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ✅ 压力线性插值函数
+  PressureData _interpolatePressure(
+    PressureData prevPressure,
+    PressureData currPressure,
+    DateTime prevTime,
+    DateTime currTime,
+    DateTime targetTime,
+  ) {
+    final duration = currTime.difference(prevTime).inMilliseconds;
+    if (duration == 0) return currPressure;
+    
+    final progress = targetTime.difference(prevTime).inMilliseconds / duration;
+    final clampedProgress = progress.clamp(0.0, 1.0);
+
+    return PressureData()
+      ..p1 = prevPressure.p1 + (currPressure.p1 - prevPressure.p1) * clampedProgress
+      ..p2 = prevPressure.p2 + (currPressure.p2 - prevPressure.p2) * clampedProgress
+      ..p3 = prevPressure.p3 + (currPressure.p3 - prevPressure.p3) * clampedProgress;
+  }
+
   void _captureOneRecord() {
     final now = DateTime.now();
-    
-    // 只有间隔 >= 10ms 才采样（保证精确 100Hz）
-    if (_lastCaptureTime != null && 
-        now.difference(_lastCaptureTime!) < _captureInterval) {
-      return;
-    }
-    
-    _lastCaptureTime = now;
-    
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
+    // ✅ 获取压力值（使用插值）
+    final pressureL = _lastPressureLeftTime != null
+        ? _interpolatePressure(
+            _lastPressureLeft,
+            _contexts[DeviceRole.pressureLeft]!.pressure,
+            _lastPressureLeftTime!,
+            _contexts[DeviceRole.pressureLeft]!.lastUpdate ?? now,
+            now,
+          )
+        : _contexts[DeviceRole.pressureLeft]!.pressure.copy();
+
+    final pressureR = _lastPressureRightTime != null
+        ? _interpolatePressure(
+            _lastPressureRight,
+            _contexts[DeviceRole.pressureRight]!.pressure,
+            _lastPressureRightTime!,
+            _contexts[DeviceRole.pressureRight]!.lastUpdate ?? now,
+            now,
+          )
+        : _contexts[DeviceRole.pressureRight]!.pressure.copy();
+
     final rec = GaitRecord(
-      timestamp: now.toIso8601String(),
-      pressureR: _contexts[DeviceRole.pressureRight]!.pressure.copy(),
+      timestamp: now.toIso8601String(),  // ✅ 真实手机时间
+      pressureR: pressureR,  // ✅ 插值后的压力值
       imuR: iR,
-      pressureL: _contexts[DeviceRole.pressureLeft]!.pressure.copy(),
+      pressureL: pressureL,  // ✅ 插值后的压力值
       imuL: iL,
       label: _currentLabel,
     );
