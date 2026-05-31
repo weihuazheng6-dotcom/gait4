@@ -58,12 +58,10 @@ class BleManager extends ChangeNotifier {
   bool _scanning = false;
   StreamSubscription<List<ScanResult>>? _scanSub;
 
-  // 录制 - 数据驱动采样（不依赖定时器）
   bool _recording = false;
   String _currentLabel = '0';
   final List<GaitRecord> _records = [];
   
-  // 改进：使用相对时间戳
   DateTime? _recordStartTime;
   int _sampleCount = 0;
 
@@ -98,8 +96,6 @@ class BleManager extends ChangeNotifier {
       _lastNotifyTime[role] = DateTime.now();
     }
   }
-
-  // ─────────────────────────── 扫描 ───────────────────────────
 
   Future<void> startScan({int timeoutSec = 12}) async {
     if (_scanning) return;
@@ -152,8 +148,6 @@ class BleManager extends ChangeNotifier {
     _scanSub = null;
     notifyListeners();
   }
-
-  // ─────────────────────────── 连接 ───────────────────────────
 
   Future<bool> connectDevice(BluetoothDevice device, DeviceRole role) async {
     final ctx = _contexts[role]!;
@@ -306,7 +300,7 @@ class BleManager extends ChangeNotifier {
 
   void _queuePressureData(DeviceContext ctx, List<int> data) {
     final queue = _dataQueue[ctx.role]!;
-    if (queue.length < 50) {
+    if (queue.length < 200) {
       queue.add({
         'type': 'pressure',
         'data': data,
@@ -317,7 +311,7 @@ class BleManager extends ChangeNotifier {
 
   void _queueImuData(DeviceContext ctx, List<int> data) {
     final queue = _dataQueue[ctx.role]!;
-    if (queue.length < 50) {
+    if (queue.length < 200) {
       queue.add({
         'type': 'imu',
         'data': data,
@@ -423,8 +417,8 @@ class BleManager extends ChangeNotifier {
     try {
       ctx._imuBuf.addAll(data);
 
-      if (ctx._imuBuf.length > 512) {
-        ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 256);
+      if (ctx._imuBuf.length > 2048) {
+        ctx._imuBuf.removeRange(0, ctx._imuBuf.length - 1024);
       }
 
       int frameCount = 0;
@@ -448,7 +442,6 @@ class BleManager extends ChangeNotifier {
           _parseImuFrame(ctx, ctx._imuBuf.sublist(0, 20));
           ctx._dataPacketsProcessed++;
           
-          // ✅ 关键改动：数据到达时采样
           if (_recording) {
             _sampleCount++;
             _captureOneRecord();
@@ -549,8 +542,6 @@ class BleManager extends ChangeNotifier {
     _dataQueue[ctx.role]?.clear();
   }
 
-  // ─────────────────────────── 录制 ───────────────────────────
-
   void startRecording() {
     if (_recording) return;
     _records.clear();
@@ -559,7 +550,7 @@ class BleManager extends ChangeNotifier {
     _sampleCount = 0;
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 - 数据驱动采样100Hz（完全不用定时器）');
+    debugPrint('[Record] 开始录制 - 数据驱动采样（HarmonyOS优化版）');
   }
 
   void stopRecording() {
