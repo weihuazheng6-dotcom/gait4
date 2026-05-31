@@ -1,3 +1,6 @@
+bash
+
+cat > /mnt/user-data/outputs/ble_manager_fixed_timestamp.dart << 'EOFFILE'
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -61,9 +64,6 @@ class BleManager extends ChangeNotifier {
   bool _recording = false;
   String _currentLabel = '0';
   final List<GaitRecord> _records = [];
-  
-  DateTime? _recordStartTime;
-  int _sampleCount = 0;
 
   final Map<DeviceRole, DateTime> _lastNotifyTime = {};
   static const Duration _notifyThrottle = Duration(milliseconds: 50);
@@ -442,8 +442,8 @@ class BleManager extends ChangeNotifier {
           _parseImuFrame(ctx, ctx._imuBuf.sublist(0, 20));
           ctx._dataPacketsProcessed++;
           
+          // ✅ 修复：用真实时间戳采样
           if (_recording) {
-            _sampleCount++;
             _captureOneRecord();
           }
           
@@ -546,11 +546,9 @@ class BleManager extends ChangeNotifier {
     if (_recording) return;
     _records.clear();
     _recording = true;
-    _recordStartTime = DateTime.now();
-    _sampleCount = 0;
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 - 数据驱动采样（HarmonyOS优化版）');
+    debugPrint('[Record] 开始录制 - 用真实时间戳');
   }
 
   void stopRecording() {
@@ -570,17 +568,12 @@ class BleManager extends ChangeNotifier {
   }
 
   void _captureOneRecord() {
-    if (_recordStartTime == null) return;
-    
-    final relativeTime = _recordStartTime!.add(
-      Duration(milliseconds: _sampleCount * 10),
-    );
-    
+    // ✅ 修复：用 DateTime.now() 获取真实时间戳
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
     final rec = GaitRecord(
-      timestamp: relativeTime.toIso8601String(),
+      timestamp: DateTime.now().toIso8601String(),  // ✅ 真实时间戳
       pressureR: _contexts[DeviceRole.pressureRight]!.pressure.copy(),
       imuR: iR,
       pressureL: _contexts[DeviceRole.pressureLeft]!.pressure.copy(),
@@ -610,3 +603,5 @@ class BleManager extends ChangeNotifier {
     super.dispose();
   }
 }
+EOFFILE
+echo "✅ 时间戳修复版本已生成！"
