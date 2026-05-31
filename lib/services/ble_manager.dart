@@ -61,6 +61,9 @@ class BleManager extends ChangeNotifier {
   bool _recording = false;
   String _currentLabel = '0';
   final List<GaitRecord> _records = [];
+  
+  DateTime? _lastCaptureTime;
+  static const Duration _captureInterval = Duration(milliseconds: 10);  // 100Hz
 
   final Map<DeviceRole, DateTime> _lastNotifyTime = {};
   static const Duration _notifyThrottle = Duration(milliseconds: 50);
@@ -542,9 +545,10 @@ class BleManager extends ChangeNotifier {
     if (_recording) return;
     _records.clear();
     _recording = true;
+    _lastCaptureTime = null;
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 - 真实时间戳（最终版）');
+    debugPrint('[Record] 开始录制 - 真实时间戳 100Hz（完全版）');
   }
 
   void stopRecording() {
@@ -564,11 +568,21 @@ class BleManager extends ChangeNotifier {
   }
 
   void _captureOneRecord() {
+    final now = DateTime.now();
+    
+    // 只有间隔 >= 10ms 才采样（保证精确 100Hz）
+    if (_lastCaptureTime != null && 
+        now.difference(_lastCaptureTime!) < _captureInterval) {
+      return;
+    }
+    
+    _lastCaptureTime = now;
+    
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
     final rec = GaitRecord(
-      timestamp: DateTime.now().toIso8601String(),
+      timestamp: now.toIso8601String(),
       pressureR: _contexts[DeviceRole.pressureRight]!.pressure.copy(),
       imuR: iR,
       pressureL: _contexts[DeviceRole.pressureLeft]!.pressure.copy(),
