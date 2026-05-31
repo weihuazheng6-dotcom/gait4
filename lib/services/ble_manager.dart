@@ -68,10 +68,20 @@ class BleManager extends ChangeNotifier {
   bool _scanning = false;
   StreamSubscription<List<ScanResult>>? _scanSub;
 
-  // 录制
+  // 录制 - 双频率采样（压力25Hz + 惯性100Hz）
   bool _recording = false;
   String _currentLabel = '0';
   final List<GaitRecord> _records = [];
+  Timer? _pressureRecordTimer;  // 压力采样定时器（25Hz）
+  Timer? _imuRecordTimer;       // 惯性采样定时器（100Hz）
+  
+  // 缓存最新的压力值
+  PressureData _lastPressureL = PressureData();
+  PressureData _lastPressureR = PressureData();
+  
+  // 改进：使用相对时间戳
+  DateTime? _recordStartTime;
+  int _sampleCount = 0;
 
   // UI更新节流 - 防止过高频率的UI更新
   final Map<DeviceRole, DateTime> _lastNotifyTime = {};
@@ -370,7 +380,6 @@ class BleManager extends ChangeNotifier {
   /// 处理所有设备的数据队列
   void _processAllDataQueues() {
     bool shouldNotify = false;
-    bool hasNewData = false;
 
     for (final role in DeviceRole.values) {
       final queue = _dataQueue[role]!;
@@ -388,8 +397,6 @@ class BleManager extends ChangeNotifier {
         } else {
           _handleImuData(ctx, data);
         }
-        
-        hasNewData = true;
       }
 
       // 检查是否需要通知UI（节流）
@@ -399,11 +406,6 @@ class BleManager extends ChangeNotifier {
         _lastNotifyTime[role] = now;
         shouldNotify = true;
       }
-    }
-
-    // 数据驱动采样：有新数据就采样一次
-    if (_recording && hasNewData) {
-      _captureOneRecord();
     }
 
     // 统一的UI更新通知，而不是每个数据都通知
@@ -621,13 +623,33 @@ class BleManager extends ChangeNotifier {
     if (_recording) return;
     _records.clear();
     _recording = true;
+    _recordStartTime = DateTime.now();  // 记录开始时间
+    _sampleCount = 0;  // 重置采样计数
+
+    // 压力传感器：25Hz（采样间隔40ms）
+    _pressureRecordTimer = Timer.periodic(const Duration(milliseconds: 40), (_) {
+      if (!_recording) return;
+      _lastPressureL = _contexts[DeviceRole.pressureLeft]!.pressure.copy();
+      _lastPressureR = _contexts[DeviceRole.pressureRight]!.pressure.copy();
+    });
+
+    // 惯性传感器：100Hz（采样间隔10ms）
+    _imuRecordTimer = Timer.periodic(const Duration(milliseconds: 10), (_) {
+      if (!_recording) return;
+      _sampleCount++;  // 增加采样计数
+      _captureOneRecord();
+    });
 
     notifyListeners();
-    debugPrint('[Record] 开始录制 - 数据驱动采样100Hz');
+    debugPrint('[Record] 开始录制 - 压力25Hz + 惯性100Hz（改进时间戳）');
   }
 
   void stopRecording() {
     _recording = false;
+    _pressureRecordTimer?.cancel();
+    _imuRecordTimer?.cancel();
+    _pressureRecordTimer = null;
+    _imuRecordTimer = null;
     notifyListeners();
     debugPrint('[Record] 停止录制，共${_records.length}条');
   }
@@ -643,17 +665,24 @@ class BleManager extends ChangeNotifier {
   }
 
   void _captureOneRecord() {
-    // 直接读取最新数据
-    final pL = _contexts[DeviceRole.pressureLeft]!.pressure.copy();
-    final pR = _contexts[DeviceRole.pressureRight]!.pressure.copy();
+    if (_recordStartTime == null) return;
+    
+    // 使用相对时间戳而不是 DateTime.now()
+    // 这样可以保证时间戳均匀分布，每10ms增加一条记录
+    final relativeTime = _recordStartTime!.add(
+      Duration(milliseconds: _sampleCount * 10),
+    );
+    
+    // 使用缓存的最新压力值（由压力采样定时器更新）
+    // 使用当前的惯性值（高频采样）
     final iL = _contexts[DeviceRole.imuLeft]!.imu.copy();
     final iR = _contexts[DeviceRole.imuRight]!.imu.copy();
 
     final rec = GaitRecord(
-      timestamp: DateTime.now().toIso8601String(),
-      pressureR: pR,
+      timestamp: relativeTime.toIso8601String(),  // ✅ 使用相对时间戳
+      pressureR: _lastPressureR,
       imuR: iR,
-      pressureL: pL,
+      pressureL: _lastPressureL,
       imuL: iL,
       label: _currentLabel,
     );
@@ -670,6 +699,8 @@ class BleManager extends ChangeNotifier {
 
   @override
   void dispose() {
+    _pressureRecordTimer?.cancel();
+    _imuRecordTimer?.cancel();
     _dataProcessTimer?.cancel();
     _scanSub?.cancel();
     for (final ctx in _contexts.values) {
