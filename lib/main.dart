@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'services/ble_manager.dart';
 import 'screens/home_screen.dart';
+import 'screens/splash_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -71,7 +72,7 @@ class GaitDetectorApp extends StatelessWidget {
             bodyLarge: TextStyle(fontSize: 16),
           ),
         ),
-        home: const PermissionGate(),
+        home: const SplashScreen(),
       ),
     );
   }
