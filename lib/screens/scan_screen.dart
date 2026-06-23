@@ -248,3 +248,4 @@ class _ScanScreenState extends State<ScanScreen> {
     super.dispose();
   }
 }
+
