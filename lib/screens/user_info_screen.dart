@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import '../main.dart'; // 访问 PermissionGate
+import 'permission_gate.dart';
 
 class UserInfoScreen extends StatefulWidget {
   const UserInfoScreen({super.key});
@@ -46,7 +46,6 @@ class _UserInfoScreenState extends State<UserInfoScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 说明卡片
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(12),
